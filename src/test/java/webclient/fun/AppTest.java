@@ -3,12 +3,250 @@
  */
 package webclient.fun;
 
+import com.github.tomakehurst.wiremock.WireMockServer;
+import com.google.common.base.Suppliers;
+import io.vavr.Function0;
+import io.vavr.concurrent.Future;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.util.StopWatch;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.SubmissionPublisher;
+
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
 
 class AppTest {
-    @Test void appHasAGreeting() {
-        App classUnderTest = new App();
-        assertNotNull(classUnderTest.getGreeting(), "app should have a greeting");
+    private static final Logger log = LoggerFactory.getLogger(AppTest.class);
+
+    private static final int port = 8080;
+    private final URI succesfulEndpoint = URI.create(String.format("http://localhost:%s/endpoint", port));
+    private final URI clientErrorEndpoint = URI.create(String.format("http://localhost:%s/client_error", port));
+    private final URI serverErrorEndpoint = URI.create(String.format("http://localhost:%s/server_error", port));
+
+    private static WebClient webClient;
+    private static WireMockServer wireMock;
+
+    @BeforeAll
+    static void setup() {
+        wireMock = new WireMockServer(port);
+        wireMock.stubFor(post(urlEqualTo("/endpoint"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                )
+        );
+
+        wireMock.stubFor(post(urlEqualTo("/server_error"))
+                .willReturn(aResponse()
+                        .withStatus(500)
+                )
+        );
+
+        wireMock.stubFor(post(urlEqualTo("/client_error"))
+                .willReturn(aResponse()
+                        .withStatus(400)
+                )
+        );
+
+        wireMock.start();
+
+        webClient = WebClient.create();
+    }
+
+    @AfterAll
+    static void tearDown() {
+        wireMock.shutdown();
+    }
+
+    @Test
+    void simpleRequestNonBlockingTestFailure() {
+        webClient
+                .post()
+                .uri(succesfulEndpoint)
+                .retrieve()
+                .toBodilessEntity();
+
+        wireMock.verify(postRequestedFor(urlMatching("/endpoint")));
+    }
+
+    @Test
+    void simpleRequestNonBlockingSillFailure() throws InterruptedException {
+        webClient
+                .post()
+                .uri(succesfulEndpoint)
+                .retrieve()
+                .toBodilessEntity();
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/endpoint")));
+    }
+
+    @Test
+    void simpleRequestNonBlockingUglySuccess() throws InterruptedException {
+        webClient
+                .post()
+                .uri(succesfulEndpoint)
+                .retrieve()
+                .toBodilessEntity()
+                .subscribe();
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/endpoint")));
+    }
+
+    @Test
+    void simpleRequestClientError() throws InterruptedException {
+        webClient
+                .post()
+                .uri(clientErrorEndpoint)
+                .retrieve()
+                .toBodilessEntity()
+                .subscribe();
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/client_error")));
+    }
+
+    @Test
+    void simpleRequestClientErrorCustomSubscriber() throws InterruptedException {
+        webClient
+                .post()
+                .uri(clientErrorEndpoint)
+                .retrieve()
+                .toBodilessEntity()
+                .map(ResponseEntity::getStatusCode)
+                .subscribe(System.out::println);
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/client_error")));
+    }
+
+    @Test
+    void simpleRequestClientErrorCustomSubscriberAndErrorHandler() throws InterruptedException {
+        webClient
+                .post()
+                .uri(clientErrorEndpoint)
+                .retrieve()
+                .toBodilessEntity()
+                .doOnError(throwable -> {
+
+                })
+                .subscribe(response -> {
+                    System.out.println(response.getStatusCode());
+                });
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/client_error")));
+    }
+
+    @Test
+    void simpleRequestClientErrorCustomSubscriberAndErrorHandlerInNotProperThread() throws InterruptedException {
+        try {
+            webClient
+                    .post()
+                    .uri(clientErrorEndpoint)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .map(ResponseEntity::getStatusCode)
+                    .subscribe(System.out::println);
+        } catch (Throwable e) {
+            System.out.println(e);
+        }
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/client_error")));
+    }
+
+    @Test
+    void simpleRequestClientErrorCustomSubscriberAndErrorHandlerPlaying() throws InterruptedException {
+        webClient
+                .post()
+                .uri(clientErrorEndpoint)
+                .retrieve()
+                .toBodilessEntity()
+//                .onErrorResume(r -> Mono.just(new ResponseEntity<>(HttpStatus.OK)))
+                .onErrorStop()
+                .map(ResponseEntity::getStatusCode)
+                .subscribe(System.out::println);
+
+        Thread.sleep(500);
+
+        wireMock.verify(postRequestedFor(urlMatching("/client_error")));
+    }
+
+    @Test
+    void playingWithMono() throws InterruptedException {
+        StopWatch timer = new StopWatch();
+        timer.start();
+        log.info("TASK");
+
+        Flux.fromStream(() -> {
+            List<Integer> result = new ArrayList<>();
+            for (int i = 0; i < 100; i++) {
+                result.add(i);
+            }
+            return result.stream();
+        })
+                .map(val -> {
+                    for (int i = 0; i < 10000; i++) {
+                        val--;
+                    }
+                    return val;
+                })
+                .subscribe(val -> {
+                    log.info("{}", val);
+                });
+
+        timer.stop();
+        log.info("Time: {} ms", timer.getTotalTimeMillis());
+        log.info("BEFORE SLEEP");
+        Thread.sleep(500);
+        log.info("AFTER SLEEP");
+    }
+
+    @Test
+    void playingWithMono2() throws InterruptedException {
+        StopWatch timer = new StopWatch();
+        timer.start();
+        Function0<Integer> task = () -> {
+            log.info("TASK");
+            int result = 0;
+            for (int i = 0; i < 1000000000; i++) {
+                result += i;
+            }
+            return result;
+        };
+
+        Mono.just(task.get())
+                .map(val -> {
+                    for (int i = 0; i < 10000; i++) {
+                        val--;
+                    }
+                    return val;
+                })
+                .subscribe(val -> {
+                    timer.stop();
+                    log.info("Time: {} ms", timer.getTotalTimeMillis());
+                    System.out.println(val);
+                });
+
+        log.info("BEFORE SLEEP");
+        Thread.sleep(500);
+        log.info("AFTER SLEEP");
     }
 }

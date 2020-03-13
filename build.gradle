@@ -52,6 +52,9 @@ dependencies {
 
     // Use JUnit Jupiter Engine for testing.
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.4.2'
+
+//    testImplementation "com.github.tomakehurst:wiremock-jre8-standalone:2.26.3"
+    testImplementation "com.github.tomakehurst:wiremock-jre8:2.26.3"
 }
 
 application {
